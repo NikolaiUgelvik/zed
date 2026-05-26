@@ -531,6 +531,7 @@ impl PickerDelegate for LanguageModelPickerDelegate {
 
                 Some(
                     ModelSelectorListItem::new(ix, model_info.model.name().0)
+                        .subtitle(model_info.model.provider_name().0)
                         .map(|this| match &model_info.icon {
                             IconOrSvg::Icon(icon_name) => this.icon(*icon_name),
                             IconOrSvg::Svg(icon_path) => this.icon_path(icon_path.clone()),

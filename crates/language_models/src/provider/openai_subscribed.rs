@@ -26,6 +26,7 @@ use crate::provider::open_ai::{OpenAiResponseEventMapper, into_open_ai_response}
 const PROVIDER_ID: LanguageModelProviderId = LanguageModelProviderId::new("openai-subscribed");
 const PROVIDER_NAME: LanguageModelProviderName =
     LanguageModelProviderName::new("ChatGPT Subscription");
+const PROVIDER_ID_PREFIX: &str = "openai-subscribed:";
 
 const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
@@ -34,6 +35,35 @@ const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 const CREDENTIALS_KEY: &str = "https://chatgpt.com/backend-api/codex";
 const TOKEN_REFRESH_BUFFER_MS: u64 = 5 * 60 * 1000;
+
+#[derive(Default, Clone, Debug, PartialEq)]
+pub struct OpenAiSubscribedSettings {
+    pub name: Arc<str>,
+}
+
+pub fn provider_id_for_subscription(subscription_id: &str) -> LanguageModelProviderId {
+    LanguageModelProviderId::from(format!("{PROVIDER_ID_PREFIX}{subscription_id}"))
+}
+
+pub fn subscription_id_from_provider_id(provider_id: &LanguageModelProviderId) -> Option<Arc<str>> {
+    provider_id
+        .0
+        .as_ref()
+        .strip_prefix(PROVIDER_ID_PREFIX)
+        .map(Arc::from)
+}
+
+fn provider_name_for_subscription(name: &str) -> LanguageModelProviderName {
+    LanguageModelProviderName::from(format!("ChatGPT Subscription: {name}"))
+}
+
+fn credentials_key_for_provider_id(provider_id: &LanguageModelProviderId) -> Arc<str> {
+    if *provider_id == PROVIDER_ID {
+        Arc::from(CREDENTIALS_KEY)
+    } else {
+        Arc::from(format!("{CREDENTIALS_KEY}/{}", provider_id.0))
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct CodexCredentials {
@@ -57,6 +87,8 @@ pub struct State {
     refresh_task: Option<Shared<Task<Result<CodexCredentials, Arc<anyhow::Error>>>>>,
     load_task: Option<Shared<Task<Result<(), Arc<anyhow::Error>>>>>,
     credentials_provider: Arc<dyn CredentialsProvider>,
+    credentials_key: Arc<str>,
+    provider_name: LanguageModelProviderName,
     auth_generation: u64,
     last_auth_error: Option<SharedString>,
 }
@@ -91,6 +123,8 @@ impl State {
 }
 
 pub struct OpenAiSubscribedProvider {
+    id: LanguageModelProviderId,
+    name: LanguageModelProviderName,
     http_client: Arc<dyn HttpClient>,
     state: Entity<State>,
 }
@@ -101,17 +135,56 @@ impl OpenAiSubscribedProvider {
         credentials_provider: Arc<dyn CredentialsProvider>,
         cx: &mut App,
     ) -> Self {
-        let state = cx.new(|_cx| State {
-            credentials: None,
-            sign_in_task: None,
-            refresh_task: None,
-            load_task: None,
+        Self::new_with_identity(
+            PROVIDER_ID,
+            PROVIDER_NAME,
+            http_client,
             credentials_provider,
-            auth_generation: 0,
-            last_auth_error: None,
+            cx,
+        )
+    }
+
+    pub fn new_named(
+        subscription_id: Arc<str>,
+        settings: OpenAiSubscribedSettings,
+        http_client: Arc<dyn HttpClient>,
+        credentials_provider: Arc<dyn CredentialsProvider>,
+        cx: &mut App,
+    ) -> Self {
+        let id = provider_id_for_subscription(&subscription_id);
+        let name = provider_name_for_subscription(&settings.name);
+        Self::new_with_identity(id, name, http_client, credentials_provider, cx)
+    }
+
+    fn new_with_identity(
+        id: LanguageModelProviderId,
+        name: LanguageModelProviderName,
+        http_client: Arc<dyn HttpClient>,
+        credentials_provider: Arc<dyn CredentialsProvider>,
+        cx: &mut App,
+    ) -> Self {
+        let credentials_key = credentials_key_for_provider_id(&id);
+        let state = cx.new({
+            let name = name.clone();
+            move |_cx| State {
+                credentials: None,
+                sign_in_task: None,
+                refresh_task: None,
+                load_task: None,
+                credentials_provider,
+                credentials_key,
+                provider_name: name,
+                auth_generation: 0,
+                last_auth_error: None,
+            }
         });
 
-        let provider = Self { http_client, state };
+        let provider = Self {
+            id,
+            name,
+            http_client,
+            state,
+        };
 
         provider.load_credentials(cx);
 
@@ -122,10 +195,11 @@ impl OpenAiSubscribedProvider {
         let state = self.state.downgrade();
         let load_task = cx
             .spawn(async move |cx| {
-                let credentials_provider =
-                    state.read_with(&*cx, |s, _| s.credentials_provider.clone())?;
+                let (credentials_provider, credentials_key) = state.read_with(&*cx, |s, _| {
+                    (s.credentials_provider.clone(), s.credentials_key.clone())
+                })?;
                 let result = credentials_provider
-                    .read_credentials(CREDENTIALS_KEY, &*cx)
+                    .read_credentials(&credentials_key, &*cx)
                     .await;
                 state.update(cx, |s, cx| {
                     if let Ok(Some((_, bytes))) = result {
@@ -157,6 +231,8 @@ impl OpenAiSubscribedProvider {
     fn create_language_model(&self, model: ChatGptModel) -> Arc<dyn LanguageModel> {
         Arc::new(OpenAiSubscribedLanguageModel {
             id: LanguageModelId::from(model.id().to_string()),
+            provider_id: self.id.clone(),
+            provider_name: self.name.clone(),
             model,
             state: self.state.clone(),
             http_client: self.http_client.clone(),
@@ -175,11 +251,11 @@ impl LanguageModelProviderState for OpenAiSubscribedProvider {
 
 impl LanguageModelProvider for OpenAiSubscribedProvider {
     fn id(&self) -> LanguageModelProviderId {
-        PROVIDER_ID
+        self.id.clone()
     }
 
     fn name(&self) -> LanguageModelProviderName {
-        PROVIDER_NAME
+        self.name.clone()
     }
 
     fn icon(&self) -> IconOrSvg {
@@ -349,6 +425,8 @@ impl ChatGptModel {
 
 struct OpenAiSubscribedLanguageModel {
     id: LanguageModelId,
+    provider_id: LanguageModelProviderId,
+    provider_name: LanguageModelProviderName,
     model: ChatGptModel,
     state: Entity<State>,
     http_client: Arc<dyn HttpClient>,
@@ -365,11 +443,11 @@ impl LanguageModel for OpenAiSubscribedLanguageModel {
     }
 
     fn provider_id(&self) -> LanguageModelProviderId {
-        PROVIDER_ID
+        self.provider_id.clone()
     }
 
     fn provider_name(&self) -> LanguageModelProviderName {
-        PROVIDER_NAME
+        self.provider_name.clone()
     }
 
     fn supports_tools(&self) -> bool {
@@ -480,6 +558,7 @@ impl LanguageModel for OpenAiSubscribedLanguageModel {
         let state = self.state.downgrade();
         let http_client = self.http_client.clone();
         let request_limiter = self.request_limiter.clone();
+        let provider_name = self.provider_name.clone();
 
         let future = cx.spawn(async move |cx| {
             let creds = get_fresh_credentials(&state, &http_client, cx).await?;
@@ -499,7 +578,7 @@ impl LanguageModel for OpenAiSubscribedLanguageModel {
                 .stream(async move {
                     stream_response(
                         http_client.as_ref(),
-                        PROVIDER_NAME.0.as_str(),
+                        provider_name.0.as_ref(),
                         CODEX_BASE_URL,
                         &access_token,
                         responses_request,
@@ -528,8 +607,11 @@ async fn get_fresh_credentials(
         .read_with(&*cx, |s, _| (s.credentials.clone(), s.refresh_task.clone()))
         .map_err(LanguageModelCompletionError::Other)?;
 
+    let provider_name = state
+        .read_with(&*cx, |s, _| s.provider_name.clone())
+        .map_err(LanguageModelCompletionError::Other)?;
     let creds = creds.ok_or(LanguageModelCompletionError::NoApiKey {
-        provider: PROVIDER_NAME,
+        provider: provider_name,
     })?;
 
     if !creds.is_expired() {
@@ -570,15 +652,17 @@ async fn get_fresh_credentials(
                             )));
                         }
 
-                        let credentials_provider = state_clone
-                            .read_with(&*cx, |s, _| s.credentials_provider.clone())
+                        let (credentials_provider, credentials_key) = state_clone
+                            .read_with(&*cx, |s, _| {
+                                (s.credentials_provider.clone(), s.credentials_key.clone())
+                            })
                             .map_err(|e| Arc::new(e))?;
 
                         let json =
                             serde_json::to_vec(&refreshed).map_err(|e| Arc::new(e.into()))?;
 
                         credentials_provider
-                            .write_credentials(CREDENTIALS_KEY, "Bearer", &json, &*cx)
+                            .write_credentials(&credentials_key, "Bearer", &json, &*cx)
                             .await
                             .map_err(|e| Arc::new(e))?;
 
@@ -612,11 +696,13 @@ async fn get_fresh_credentials(
                         cx.notify();
                     });
                     // Also clear the keychain so stale credentials aren't loaded next time.
-                    if let Ok(credentials_provider) =
-                        state_clone.read_with(&*cx, |s, _| s.credentials_provider.clone())
+                    if let Ok((credentials_provider, credentials_key)) = state_clone
+                        .read_with(&*cx, |s, _| {
+                            (s.credentials_provider.clone(), s.credentials_key.clone())
+                        })
                     {
                         credentials_provider
-                            .delete_credentials(CREDENTIALS_KEY, &*cx)
+                            .delete_credentials(&credentials_key, &*cx)
                             .await
                             .log_err();
                     }
@@ -916,11 +1002,13 @@ fn do_sign_in(state: &Entity<State>, http_client: &Arc<dyn HttpClient>, cx: &mut
         match do_oauth_flow(http_client, &*cx).await {
             Ok(creds) => {
                 let persist_result = async {
-                    let credentials_provider =
-                        weak_state.read_with(&*cx, |s, _| s.credentials_provider.clone())?;
+                    let (credentials_provider, credentials_key) = weak_state
+                        .read_with(&*cx, |s, _| {
+                            (s.credentials_provider.clone(), s.credentials_key.clone())
+                        })?;
                     let json = serde_json::to_vec(&creds)?;
                     credentials_provider
-                        .write_credentials(CREDENTIALS_KEY, "Bearer", &json, &*cx)
+                        .write_credentials(&credentials_key, "Bearer", &json, &*cx)
                         .await?;
                     anyhow::Ok(())
                 }
@@ -989,10 +1077,11 @@ fn do_sign_out(state: &gpui::WeakEntity<State>, cx: &mut App) -> Task<Result<()>
         .log_err();
 
     cx.spawn(async move |cx| {
-        let credentials_provider =
-            weak_state.read_with(&*cx, |s, _| s.credentials_provider.clone())?;
+        let (credentials_provider, credentials_key) = weak_state.read_with(&*cx, |s, _| {
+            (s.credentials_provider.clone(), s.credentials_key.clone())
+        })?;
         credentials_provider
-            .delete_credentials(CREDENTIALS_KEY, &*cx)
+            .delete_credentials(&credentials_key, &*cx)
             .await
             .context("Failed to delete ChatGPT subscription credentials from keychain")?;
         anyhow::Ok(())
@@ -1161,6 +1250,98 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_named_provider_uses_distinct_provider_identity(cx: &mut TestAppContext) {
+        let http_client = FakeHttpClient::create(|_| async {
+            Ok(http_client::Response::builder()
+                .status(200)
+                .body(http_client::AsyncBody::default())?)
+        });
+        let credentials_provider = Arc::new(FakeCredentialsProvider::new());
+
+        let (work_provider, private_provider) = cx.update(|cx| {
+            (
+                OpenAiSubscribedProvider::new_named(
+                    Arc::from("work"),
+                    OpenAiSubscribedSettings {
+                        name: Arc::from("Work"),
+                    },
+                    http_client.clone(),
+                    credentials_provider.clone(),
+                    cx,
+                ),
+                OpenAiSubscribedProvider::new_named(
+                    Arc::from("private"),
+                    OpenAiSubscribedSettings {
+                        name: Arc::from("Private"),
+                    },
+                    http_client,
+                    credentials_provider,
+                    cx,
+                ),
+            )
+        });
+
+        assert_eq!(work_provider.id().0.as_ref(), "openai-subscribed:work");
+        assert_eq!(
+            work_provider.name().0.as_ref(),
+            "ChatGPT Subscription: Work"
+        );
+        assert_eq!(
+            private_provider.id().0.as_ref(),
+            "openai-subscribed:private"
+        );
+        assert_eq!(
+            private_provider.name().0.as_ref(),
+            "ChatGPT Subscription: Private"
+        );
+
+        let work_model = cx.update(|cx| work_provider.default_model(cx).unwrap());
+        let private_model = cx.update(|cx| private_provider.default_model(cx).unwrap());
+        assert_eq!(work_model.id(), private_model.id());
+        assert_eq!(work_model.provider_id(), work_provider.id());
+        assert_eq!(private_model.provider_id(), private_provider.id());
+        assert_eq!(work_model.provider_name(), work_provider.name());
+        assert_eq!(private_model.provider_name(), private_provider.name());
+    }
+
+    #[gpui::test]
+    async fn test_named_provider_uses_account_specific_credentials_key(cx: &mut TestAppContext) {
+        let http_client = FakeHttpClient::create(|_| async {
+            Ok(http_client::Response::builder()
+                .status(200)
+                .body(http_client::AsyncBody::default())?)
+        });
+        let credentials_provider = Arc::new(FakeCredentialsProvider::new());
+
+        let (legacy_key, named_key) = cx.update(|cx| {
+            let legacy_provider = OpenAiSubscribedProvider::new(
+                http_client.clone(),
+                credentials_provider.clone(),
+                cx,
+            );
+            let named_provider = OpenAiSubscribedProvider::new_named(
+                Arc::from("work"),
+                OpenAiSubscribedSettings {
+                    name: Arc::from("Work"),
+                },
+                http_client,
+                credentials_provider,
+                cx,
+            );
+            (
+                legacy_provider.state.read(cx).credentials_key.clone(),
+                named_provider.state.read(cx).credentials_key.clone(),
+            )
+        });
+
+        assert_eq!(legacy_key.as_ref(), "https://chatgpt.com/backend-api/codex");
+        assert_eq!(
+            named_key.as_ref(),
+            "https://chatgpt.com/backend-api/codex/openai-subscribed:work"
+        );
+    }
+
+    #[gpui::test]
     async fn test_concurrent_refresh_deduplicates(cx: &mut TestAppContext) {
         let refresh_count = Arc::new(AtomicUsize::new(0));
         let refresh_count_clone = refresh_count.clone();
@@ -1182,6 +1363,8 @@ mod tests {
             refresh_task: None,
             load_task: None,
             credentials_provider: Arc::new(FakeCredentialsProvider::new()),
+            credentials_key: Arc::from(CREDENTIALS_KEY),
+            provider_name: PROVIDER_NAME,
             auth_generation: 0,
             last_auth_error: None,
         });
@@ -1238,6 +1421,8 @@ mod tests {
             refresh_task: None,
             load_task: None,
             credentials_provider: Arc::new(FakeCredentialsProvider::new()),
+            credentials_key: Arc::from(CREDENTIALS_KEY),
+            provider_name: PROVIDER_NAME,
             auth_generation: 0,
             last_auth_error: None,
         });
@@ -1274,6 +1459,8 @@ mod tests {
             refresh_task: None,
             load_task: None,
             credentials_provider: Arc::new(FakeCredentialsProvider::new()),
+            credentials_key: Arc::from(CREDENTIALS_KEY),
+            provider_name: PROVIDER_NAME,
             auth_generation: 0,
             last_auth_error: None,
         });
@@ -1308,6 +1495,8 @@ mod tests {
             refresh_task: None,
             load_task: None,
             credentials_provider: creds_provider.clone(),
+            credentials_key: Arc::from(CREDENTIALS_KEY),
+            provider_name: PROVIDER_NAME,
             auth_generation: 0,
             last_auth_error: None,
         });
@@ -1351,6 +1540,8 @@ mod tests {
             refresh_task: None,
             load_task: None,
             credentials_provider: Arc::new(FakeCredentialsProvider::new()),
+            credentials_key: Arc::from(CREDENTIALS_KEY),
+            provider_name: PROVIDER_NAME,
             auth_generation: 0,
             last_auth_error: None,
         });
@@ -1408,6 +1599,8 @@ mod tests {
             refresh_task: None,
             load_task: None,
             credentials_provider: creds_provider.clone(),
+            credentials_key: Arc::from(CREDENTIALS_KEY),
+            provider_name: PROVIDER_NAME,
             auth_generation: 0,
             last_auth_error: None,
         });
@@ -1460,6 +1653,8 @@ mod tests {
             refresh_task: None,
             load_task: None,
             credentials_provider: creds_provider.clone(),
+            credentials_key: Arc::from(CREDENTIALS_KEY),
+            provider_name: PROVIDER_NAME,
             auth_generation: 0,
             last_auth_error: None,
         });

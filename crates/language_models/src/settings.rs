@@ -8,7 +8,8 @@ use crate::provider::{
     deepseek::DeepSeekSettings, google::GoogleSettings, lmstudio::LmStudioSettings,
     mistral::MistralSettings, ollama::OllamaSettings, open_ai::OpenAiSettings,
     open_ai_compatible::OpenAiCompatibleSettings, open_router::OpenRouterSettings,
-    opencode::OpenCodeSettings, vercel_ai_gateway::VercelAiGatewaySettings, x_ai::XAiSettings,
+    openai_subscribed::OpenAiSubscribedSettings, opencode::OpenCodeSettings,
+    vercel_ai_gateway::VercelAiGatewaySettings, x_ai::XAiSettings,
 };
 
 #[derive(Debug, RegisterSetting)]
@@ -24,6 +25,7 @@ pub struct AllLanguageModelSettings {
     pub open_router: OpenRouterSettings,
     pub openai: OpenAiSettings,
     pub openai_compatible: HashMap<Arc<str>, OpenAiCompatibleSettings>,
+    pub openai_subscribed: HashMap<Arc<str>, OpenAiSubscribedSettings>,
     pub vercel_ai_gateway: VercelAiGatewaySettings,
     pub x_ai: XAiSettings,
     pub zed_dot_dev: ZedDotDevSettings,
@@ -45,6 +47,7 @@ impl settings::Settings for AllLanguageModelSettings {
         let open_router = language_models.open_router.unwrap();
         let openai = language_models.openai.unwrap();
         let openai_compatible = language_models.openai_compatible.unwrap();
+        let openai_subscribed = language_models.openai_subscribed.unwrap();
         let vercel_ai_gateway = language_models.vercel_ai_gateway.unwrap();
         let x_ai = language_models.x_ai.unwrap();
         let zed_dot_dev = language_models.zed_dot_dev.unwrap();
@@ -111,6 +114,13 @@ impl settings::Settings for AllLanguageModelSettings {
                             available_models: value.available_models,
                         },
                     )
+                })
+                .collect(),
+            openai_subscribed: openai_subscribed
+                .into_iter()
+                .map(|(key, value)| {
+                    let name = value.name.unwrap_or_else(|| key.clone());
+                    (key, OpenAiSubscribedSettings { name })
                 })
                 .collect(),
             vercel_ai_gateway: VercelAiGatewaySettings {

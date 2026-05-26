@@ -21,6 +21,7 @@ pub struct AllLanguageModelSettingsContent {
     pub open_router: Option<OpenRouterSettingsContent>,
     pub openai: Option<OpenAiSettingsContent>,
     pub openai_compatible: Option<HashMap<Arc<str>, OpenAiCompatibleSettingsContent>>,
+    pub openai_subscribed: Option<HashMap<Arc<str>, OpenAiSubscribedSettingsContent>>,
     pub vercel_ai_gateway: Option<VercelAiGatewaySettingsContent>,
     pub x_ai: Option<XAiSettingsContent>,
     #[serde(rename = "zed.dev")]
@@ -145,6 +146,13 @@ impl Default for KeepAlive {
     fn default() -> Self {
         Self::indefinite()
     }
+}
+
+#[with_fallible_options]
+#[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct OpenAiSubscribedSettingsContent {
+    /// The label shown after "ChatGPT Subscription:" in provider and model selectors.
+    pub name: Option<Arc<str>>,
 }
 
 #[with_fallible_options]

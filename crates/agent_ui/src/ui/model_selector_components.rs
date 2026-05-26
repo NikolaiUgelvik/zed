@@ -47,6 +47,7 @@ impl RenderOnce for ModelSelectorHeader {
 pub struct ModelSelectorListItem {
     index: usize,
     title: SharedString,
+    subtitle: Option<SharedString>,
     icon: Option<ModelIcon>,
     is_selected: bool,
     is_focused: bool,
@@ -61,6 +62,7 @@ impl ModelSelectorListItem {
         Self {
             index,
             title: title.into(),
+            subtitle: None,
             icon: None,
             is_selected: false,
             is_focused: false,
@@ -69,6 +71,11 @@ impl ModelSelectorListItem {
             on_toggle_favorite: None,
             cost_info: None,
         }
+    }
+
+    pub fn subtitle(mut self, subtitle: impl Into<SharedString>) -> Self {
+        self.subtitle = Some(subtitle.into());
+        self
     }
 
     pub fn icon(mut self, icon: IconName) -> Self {
@@ -143,7 +150,21 @@ impl RenderOnce for ModelSelectorListItem {
                             .size(IconSize::Small),
                         )
                     })
-                    .child(Label::new(self.title).truncate())
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .child(Label::new(self.title).truncate())
+                            .when_some(self.subtitle, |this, subtitle| {
+                                this.child(Label::new("·").color(Color::Muted)).child(
+                                    Label::new(subtitle)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted)
+                                        .truncate(),
+                                )
+                            }),
+                    )
                     .when(self.is_latest, |parent| parent.child(Chip::new("Latest")))
                     .when_some(self.cost_info, |this, cost_info| {
                         let tooltip_text = if cost_info.ends_with('×') {

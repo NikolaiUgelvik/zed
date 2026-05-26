@@ -25,7 +25,9 @@ use language_model::{
     IconOrSvg, LanguageModelProvider, LanguageModelProviderId, LanguageModelRegistry,
     ZED_CLOUD_PROVIDER_ID,
 };
-use language_models::AllLanguageModelSettings;
+use language_models::{
+    AllLanguageModelSettings, provider::openai_subscribed::subscription_id_from_provider_id,
+};
 use notifications::status_toast::StatusToast;
 use project::{
     agent_server_store::{AgentId, AgentServerStore, ExternalAgentSource},
@@ -390,19 +392,37 @@ impl AgentConfiguration {
     ) {
         let fs = self.fs.clone();
         let provider_id = provider.id();
+        let reset_credentials = if subscription_id_from_provider_id(&provider_id).is_some() {
+            Some(provider.reset_credentials(cx))
+        } else {
+            None
+        };
 
         cx.spawn_in(window, async move |_, cx| {
+            if let Some(reset_credentials) = reset_credentials {
+                reset_credentials.await.log_err();
+            }
             cx.update(|_window, cx| {
                 update_settings_file(fs.clone(), cx, {
                     let provider_id = provider_id.clone();
                     move |settings, _| {
-                        if let Some(ref mut openai_compatible) = settings
-                            .language_models
-                            .as_mut()
-                            .and_then(|lm| lm.openai_compatible.as_mut())
-                        {
-                            let key_to_remove: Arc<str> = Arc::from(provider_id.0.as_ref());
-                            openai_compatible.remove(&key_to_remove);
+                        if let Some(language_models) = settings.language_models.as_mut() {
+                            if let Some(ref mut openai_compatible) =
+                                language_models.openai_compatible.as_mut()
+                            {
+                                let key_to_remove: Arc<str> = Arc::from(provider_id.0.as_ref());
+                                openai_compatible.remove(&key_to_remove);
+                            }
+
+                            if let Some(ref mut openai_subscribed) =
+                                language_models.openai_subscribed.as_mut()
+                            {
+                                if let Some(key_to_remove) =
+                                    subscription_id_from_provider_id(&provider_id)
+                                {
+                                    openai_subscribed.remove(&key_to_remove);
+                                }
+                            }
                         }
                     }
                 });
@@ -445,21 +465,38 @@ impl AgentConfiguration {
                 let workspace = self.workspace.clone();
                 move |window, cx| {
                     Some(ContextMenu::build(window, cx, |menu, _window, _cx| {
-                        menu.header("Compatible APIs").entry("OpenAI", None, {
-                            let workspace = workspace.clone();
-                            move |window, cx| {
-                                workspace
-                                    .update(cx, |workspace, cx| {
-                                        AddLlmProviderModal::toggle(
-                                            LlmCompatibleProvider::OpenAi,
-                                            workspace,
-                                            window,
-                                            cx,
-                                        );
-                                    })
-                                    .log_err();
-                            }
-                        })
+                        menu.header("Compatible APIs")
+                            .entry("OpenAI", None, {
+                                let workspace = workspace.clone();
+                                move |window, cx| {
+                                    workspace
+                                        .update(cx, |workspace, cx| {
+                                            AddLlmProviderModal::toggle(
+                                                LlmCompatibleProvider::OpenAi,
+                                                workspace,
+                                                window,
+                                                cx,
+                                            );
+                                        })
+                                        .log_err();
+                                }
+                            })
+                            .header("Subscriptions")
+                            .entry("ChatGPT Subscription", None, {
+                                let workspace = workspace.clone();
+                                move |window, cx| {
+                                    workspace
+                                        .update(cx, |workspace, cx| {
+                                            AddLlmProviderModal::toggle(
+                                                LlmCompatibleProvider::ChatGptSubscription,
+                                                workspace,
+                                                window,
+                                                cx,
+                                            );
+                                        })
+                                        .log_err();
+                                }
+                            })
                     }))
                 }
             })
@@ -1543,7 +1580,11 @@ fn find_text_in_buffer(
 // If in the future we have more "API-compatible-type" of providers,
 // they should be included here as removable providers.
 fn is_removable_provider(provider_id: &LanguageModelProviderId, cx: &App) -> bool {
-    AllLanguageModelSettings::get_global(cx)
+    let settings = AllLanguageModelSettings::get_global(cx);
+    settings
         .openai_compatible
         .contains_key(provider_id.0.as_ref())
+        || subscription_id_from_provider_id(provider_id).is_some_and(|subscription_id| {
+            settings.openai_subscribed.contains_key(&subscription_id)
+        })
 }

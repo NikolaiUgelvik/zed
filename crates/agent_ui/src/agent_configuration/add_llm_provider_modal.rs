@@ -7,8 +7,13 @@ use gpui::{
     DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Render, ScrollHandle, Task, TaskExt,
 };
 use language_model::LanguageModelRegistry;
-use language_models::provider::open_ai_compatible::{AvailableModel, ModelCapabilities};
-use settings::{OpenAiCompatibleSettingsContent, update_settings_file};
+use language_models::provider::{
+    open_ai_compatible::{AvailableModel, ModelCapabilities},
+    openai_subscribed::provider_id_for_subscription,
+};
+use settings::{
+    OpenAiCompatibleSettingsContent, OpenAiSubscribedSettingsContent, update_settings_file,
+};
 use ui::{
     Banner, Checkbox, KeyBinding, Modal, ModalFooter, ModalHeader, Section, ToggleState,
     WithScrollbar, prelude::*,
@@ -40,18 +45,21 @@ fn single_line_input(
 #[derive(Clone, Copy)]
 pub enum LlmCompatibleProvider {
     OpenAi,
+    ChatGptSubscription,
 }
 
 impl LlmCompatibleProvider {
     fn name(&self) -> &'static str {
         match self {
             LlmCompatibleProvider::OpenAi => "OpenAI",
+            LlmCompatibleProvider::ChatGptSubscription => "ChatGPT Subscription",
         }
     }
 
     fn api_url(&self) -> &'static str {
         match self {
             LlmCompatibleProvider::OpenAi => "https://api.openai.com/v1",
+            LlmCompatibleProvider::ChatGptSubscription => "",
         }
     }
 }
@@ -216,26 +224,92 @@ impl ModelInput {
     }
 }
 
+fn settings_key_for_provider_name(provider_name: &str) -> Arc<str> {
+    let mut key = String::new();
+    let mut last_was_separator = false;
+
+    for character in provider_name.trim().chars() {
+        if character.is_alphanumeric() {
+            for character in character.to_lowercase() {
+                key.push(character);
+            }
+            last_was_separator = false;
+        } else if !last_was_separator {
+            key.push('-');
+            last_was_separator = true;
+        }
+    }
+
+    while key.ends_with('-') {
+        key.pop();
+    }
+
+    Arc::from(key)
+}
+
 fn save_provider_to_settings(
     input: &AddLlmProviderInput,
+    provider: LlmCompatibleProvider,
     cx: &mut App,
 ) -> Task<Result<(), SharedString>> {
-    let provider_name: Arc<str> = input.provider_name.read(cx).text(cx).into();
+    let provider_name: Arc<str> = input.provider_name.read(cx).text(cx).trim().into();
     if provider_name.is_empty() {
         return Task::ready(Err("Provider Name cannot be empty".into()));
     }
+
+    let provider_id: Arc<str> = match provider {
+        LlmCompatibleProvider::OpenAi => provider_name.clone(),
+        LlmCompatibleProvider::ChatGptSubscription => {
+            provider_id_for_subscription(&settings_key_for_provider_name(&provider_name))
+                .0
+                .as_ref()
+                .into()
+        }
+    };
+    let display_name: Arc<str> = match provider {
+        LlmCompatibleProvider::OpenAi => provider_name.clone(),
+        LlmCompatibleProvider::ChatGptSubscription => {
+            Arc::from(format!("ChatGPT Subscription: {provider_name}"))
+        }
+    };
 
     if LanguageModelRegistry::read_global(cx)
         .providers()
         .iter()
         .any(|provider| {
-            provider.id().0.as_ref() == provider_name.as_ref()
-                || provider.name().0.as_ref() == provider_name.as_ref()
+            provider.id().0.as_ref() == provider_id.as_ref()
+                || provider.name().0.as_ref() == display_name.as_ref()
         })
     {
         return Task::ready(Err(
             "Provider Name is already taken by another provider".into()
         ));
+    }
+
+    if matches!(provider, LlmCompatibleProvider::ChatGptSubscription) {
+        let provider_key = settings_key_for_provider_name(&provider_name);
+        if provider_key.is_empty() {
+            return Task::ready(Err("Provider Name cannot be empty".into()));
+        }
+        let fs = <dyn Fs>::global(cx);
+        return cx.spawn(async move |cx| {
+            cx.update(|cx| {
+                update_settings_file(fs, cx, |settings, _cx| {
+                    settings
+                        .language_models
+                        .get_or_insert_default()
+                        .openai_subscribed
+                        .get_or_insert_default()
+                        .insert(
+                            provider_key,
+                            OpenAiSubscribedSettingsContent {
+                                name: provider_name.into(),
+                            },
+                        );
+                });
+            });
+            Ok(())
+        });
     }
 
     let api_url = input.api_url.read(cx).text(cx);
@@ -316,7 +390,7 @@ impl AddLlmProviderModal {
     }
 
     fn confirm(&mut self, _: &menu::Confirm, _: &mut Window, cx: &mut Context<Self>) {
-        let task = save_provider_to_settings(&self.input, cx);
+        let task = save_provider_to_settings(&self.input, self.provider, cx);
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| match result {
@@ -525,6 +599,9 @@ impl Render for AddLlmProviderModal {
                             LlmCompatibleProvider::OpenAi => {
                                 "This provider will use an OpenAI compatible API."
                             }
+                            LlmCompatibleProvider::ChatGptSubscription => {
+                                "This provider will use a ChatGPT Plus or Pro subscription."
+                            }
                         },
                     ))
                     .when_some(self.last_error.clone(), |this, error| {
@@ -553,9 +630,14 @@ impl Render for AddLlmProviderModal {
                                     .overflow_y_scroll()
                                     .track_scroll(&self.scroll_handle)
                                     .child(self.input.provider_name.clone())
-                                    .child(self.input.api_url.clone())
-                                    .child(self.input.api_key.clone())
-                                    .child(self.render_model_section(cx)),
+                                    .when(
+                                        matches!(self.provider, LlmCompatibleProvider::OpenAi),
+                                        |this| {
+                                            this.child(self.input.api_url.clone())
+                                                .child(self.input.api_key.clone())
+                                                .child(self.render_model_section(cx))
+                                        },
+                                    ),
                             ),
                     )
                     .footer(
@@ -606,9 +688,37 @@ mod tests {
         fake_provider::FakeLanguageModelProvider,
     };
     use project::Project;
-    use settings::SettingsStore;
+    use settings::{Settings, SettingsStore};
     use util::path;
     use workspace::MultiWorkspace;
+
+    #[gpui::test]
+    async fn test_save_chatgpt_subscription_provider_to_settings(cx: &mut TestAppContext) {
+        let cx = setup_test(cx).await;
+
+        let result = save_chatgpt_subscription_provider("Work", cx).await;
+        assert!(result.is_none());
+        cx.executor().run_until_parked();
+
+        cx.update(|_, cx| {
+            let settings = language_models::AllLanguageModelSettings::get_global(cx);
+            let provider = settings
+                .openai_subscribed
+                .get("work")
+                .expect("named ChatGPT Subscription provider should be saved");
+            assert_eq!(provider.name.as_ref(), "Work");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_save_chatgpt_subscription_provider_invalid_inputs(cx: &mut TestAppContext) {
+        let cx = setup_test(cx).await;
+
+        assert_eq!(
+            save_chatgpt_subscription_provider("", cx).await,
+            Some("Provider Name cannot be empty".into())
+        );
+    }
 
     #[gpui::test]
     async fn test_save_provider_invalid_inputs(cx: &mut TestAppContext) {
@@ -832,6 +942,22 @@ mod tests {
         cx
     }
 
+    async fn save_chatgpt_subscription_provider(
+        provider_name: &str,
+        cx: &mut VisualTestContext,
+    ) -> Option<SharedString> {
+        let task = cx.update(|window, cx| {
+            let input =
+                AddLlmProviderInput::new(LlmCompatibleProvider::ChatGptSubscription, window, cx);
+            input.provider_name.update(cx, |input, cx| {
+                input.set_text(provider_name, window, cx);
+            });
+            save_provider_to_settings(&input, LlmCompatibleProvider::ChatGptSubscription, cx)
+        });
+
+        task.await.err()
+    }
+
     async fn save_provider_validation_errors(
         provider_name: &str,
         api_url: &str,
@@ -868,7 +994,7 @@ mod tests {
                 );
                 set_text(&model.max_output_tokens, max_output_tokens, window, cx);
             }
-            save_provider_to_settings(&input, cx)
+            save_provider_to_settings(&input, LlmCompatibleProvider::OpenAi, cx)
         });
 
         task.await.err()

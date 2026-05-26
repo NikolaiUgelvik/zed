@@ -5,7 +5,7 @@ use agent_client_protocol::schema as acp;
 use agent_servers::AgentServer;
 
 use anyhow::Result;
-use collections::{HashSet, IndexMap};
+use collections::{HashMap, HashSet, IndexMap};
 use fs::Fs;
 use futures::FutureExt;
 use fuzzy::{StringMatchCandidate, match_strings};
@@ -44,7 +44,11 @@ pub fn acp_model_selector(
 
 enum ModelPickerEntry {
     Separator(SharedString),
-    Model(AgentModelInfo, bool),
+    Model {
+        info: AgentModelInfo,
+        is_favorite: bool,
+        group_name: Option<SharedString>,
+    },
 }
 
 pub struct ModelPickerDelegate {
@@ -192,7 +196,7 @@ impl ModelPickerDelegate {
 
         // Keep the picker selection aligned with the newly-selected model
         if let Some(new_index) = self.filtered_entries.iter().position(|entry| {
-            matches!(entry, ModelPickerEntry::Model(model_info, _) if self.selected_model.as_ref().is_some_and(|selected| model_info.id == selected.id))
+            matches!(entry, ModelPickerEntry::Model { info, .. } if self.selected_model.as_ref().is_some_and(|selected| info.id == selected.id))
         }) {
             self.set_selected_index(new_index, window, cx);
         } else {
@@ -219,7 +223,7 @@ impl PickerDelegate for ModelPickerDelegate {
 
     fn can_select(&self, ix: usize, _window: &mut Window, _cx: &mut Context<Picker<Self>>) -> bool {
         match self.filtered_entries.get(ix) {
-            Some(ModelPickerEntry::Model(_, _)) => true,
+            Some(ModelPickerEntry::Model { .. }) => true,
             Some(ModelPickerEntry::Separator(_)) | None => false,
         }
     }
@@ -260,8 +264,8 @@ impl PickerDelegate for ModelPickerDelegate {
                     .as_ref()
                     .and_then(|selected| {
                         this.delegate.filtered_entries.iter().position(|entry| {
-                            if let ModelPickerEntry::Model(model_info, _) = entry {
-                                model_info.id == selected.id
+                            if let ModelPickerEntry::Model { info, .. } = entry {
+                                info.id == selected.id
                             } else {
                                 false
                             }
@@ -276,8 +280,9 @@ impl PickerDelegate for ModelPickerDelegate {
     }
 
     fn confirm(&mut self, _secondary: bool, window: &mut Window, cx: &mut Context<Picker<Self>>) {
-        if let Some(ModelPickerEntry::Model(model_info, _)) =
-            self.filtered_entries.get(self.selected_index)
+        if let Some(ModelPickerEntry::Model {
+            info: model_info, ..
+        }) = self.filtered_entries.get(self.selected_index)
         {
             self.agent_server
                 .set_default_model(Some(model_info.id.clone()), self.fs.clone(), cx);
@@ -310,7 +315,11 @@ impl PickerDelegate for ModelPickerDelegate {
             ModelPickerEntry::Separator(title) => {
                 Some(ModelSelectorHeader::new(title, ix > 1).into_any_element())
             }
-            ModelPickerEntry::Model(model_info, is_favorite) => {
+            ModelPickerEntry::Model {
+                info: model_info,
+                is_favorite,
+                group_name,
+            } => {
                 let is_selected = Some(model_info) == self.selected_model.as_ref();
 
                 let is_favorite = *is_favorite;
@@ -347,6 +356,9 @@ impl PickerDelegate for ModelPickerDelegate {
                         })
                         .child(
                             ModelSelectorListItem::new(ix, model_info.name.clone())
+                                .when_some(group_name.clone(), |this, group_name| {
+                                    this.subtitle(group_name)
+                                })
                                 .map(|this| match &model_info.icon {
                                     Some(AgentModelIcon::Path(path)) => this.icon_path(path.clone()),
                                     Some(AgentModelIcon::Named(icon)) => this.icon(*icon),
@@ -419,10 +431,27 @@ fn info_list_to_picker_entries(
         .collect();
 
     let has_favorites = !favorite_models.is_empty();
+    let mut favorite_name_counts = HashMap::default();
+    for model in &favorite_models {
+        *favorite_name_counts.entry(model.name.clone()).or_insert(0) += 1;
+    }
+
     if has_favorites {
         entries.push(ModelPickerEntry::Separator("Favorite".into()));
         for model in favorite_models {
-            entries.push(ModelPickerEntry::Model((*model).clone(), true));
+            let group_name = if favorite_name_counts
+                .get(&model.name)
+                .is_some_and(|count| *count > 1)
+            {
+                model_group_name(&model_list, &model.id)
+            } else {
+                None
+            };
+            entries.push(ModelPickerEntry::Model {
+                info: (*model).clone(),
+                is_favorite: true,
+                group_name,
+            });
         }
     }
 
@@ -433,21 +462,42 @@ fn info_list_to_picker_entries(
             }
             for model in list {
                 let is_favorite = favorites.contains(&model.id);
-                entries.push(ModelPickerEntry::Model(model, is_favorite));
+                entries.push(ModelPickerEntry::Model {
+                    info: model,
+                    is_favorite,
+                    group_name: None,
+                });
             }
         }
         AgentModelList::Grouped(index_map) => {
             for (group_name, models) in index_map {
-                entries.push(ModelPickerEntry::Separator(group_name.0));
+                entries.push(ModelPickerEntry::Separator(group_name.0.clone()));
                 for model in models {
                     let is_favorite = favorites.contains(&model.id);
-                    entries.push(ModelPickerEntry::Model(model, is_favorite));
+                    entries.push(ModelPickerEntry::Model {
+                        info: model,
+                        is_favorite,
+                        group_name: None,
+                    });
                 }
             }
         }
     }
 
     entries
+}
+
+fn model_group_name(model_list: &AgentModelList, model_id: &acp::ModelId) -> Option<SharedString> {
+    let AgentModelList::Grouped(groups) = model_list else {
+        return None;
+    };
+
+    groups.iter().find_map(|(group_name, models)| {
+        models
+            .iter()
+            .any(|model| &model.id == model_id)
+            .then(|| group_name.0.clone())
+    })
 }
 
 async fn fuzzy_search(
@@ -519,15 +569,29 @@ mod tests {
     use super::*;
 
     fn create_model_list(grouped_models: Vec<(&str, Vec<&str>)>) -> AgentModelList {
+        create_named_model_list(
+            grouped_models
+                .into_iter()
+                .map(|(group, models)| {
+                    (
+                        group,
+                        models.into_iter().map(|model| (model, model)).collect(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn create_named_model_list(grouped_models: Vec<(&str, Vec<(&str, &str)>)>) -> AgentModelList {
         AgentModelList::Grouped(IndexMap::from_iter(grouped_models.into_iter().map(
             |(group, models)| {
                 (
                     acp_thread::AgentModelGroupName(group.to_string().into()),
                     models
                         .into_iter()
-                        .map(|model| acp_thread::AgentModelInfo {
-                            id: acp::ModelId::new(model.to_string()),
-                            name: model.to_string().into(),
+                        .map(|(id, name)| acp_thread::AgentModelInfo {
+                            id: acp::ModelId::new(id.to_string()),
+                            name: name.to_string().into(),
                             description: None,
                             icon: None,
                             is_latest: false,
@@ -586,7 +650,7 @@ mod tests {
         entries
             .iter()
             .filter_map(|entry| match entry {
-                ModelPickerEntry::Model(info, _) => Some(info.id.0.as_ref()),
+                ModelPickerEntry::Model { info, .. } => Some(info.id.0.as_ref()),
                 _ => None,
             })
             .collect()
@@ -728,10 +792,89 @@ mod tests {
         entries
             .iter()
             .map(|entry| match entry {
-                ModelPickerEntry::Model(info, _) => info.id.0.as_ref(),
+                ModelPickerEntry::Model { info, .. } => info.id.0.as_ref(),
                 ModelPickerEntry::Separator(s) => &s,
             })
             .collect()
+    }
+
+    fn get_model_group_names(entries: &[ModelPickerEntry]) -> Vec<Option<&str>> {
+        entries
+            .iter()
+            .filter_map(|entry| match entry {
+                ModelPickerEntry::Model { group_name, .. } => {
+                    Some(group_name.as_ref().map(|group_name| group_name.as_ref()))
+                }
+                ModelPickerEntry::Separator(_) => None,
+            })
+            .collect()
+    }
+
+    #[gpui::test]
+    fn test_favorite_models_only_keep_group_name_when_duplicate_names_exist(
+        _cx: &mut TestAppContext,
+    ) {
+        let models = create_named_model_list(vec![
+            (
+                "ChatGPT Subscription: Work",
+                vec![("openai-subscribed:work/gpt-5.5", "GPT-5.5")],
+            ),
+            (
+                "ChatGPT Subscription: Personal",
+                vec![("openai-subscribed:personal/gpt-5.5", "GPT-5.5")],
+            ),
+        ]);
+        let favorites = create_favorites(vec![
+            "openai-subscribed:work/gpt-5.5",
+            "openai-subscribed:personal/gpt-5.5",
+        ]);
+
+        let entries = info_list_to_picker_entries(models, &favorites);
+
+        assert_eq!(
+            get_model_group_names(&entries)[0..2],
+            [
+                Some("ChatGPT Subscription: Work"),
+                Some("ChatGPT Subscription: Personal"),
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn test_favorite_models_omit_group_name_when_names_are_unique(_cx: &mut TestAppContext) {
+        let models = create_model_list(vec![
+            (
+                "ChatGPT Subscription: Work",
+                vec!["openai-subscribed:work/gpt-5.5"],
+            ),
+            ("LM Studio", vec!["qwen/qwen3"]),
+        ]);
+        let favorites = create_favorites(vec!["openai-subscribed:work/gpt-5.5", "qwen/qwen3"]);
+
+        let entries = info_list_to_picker_entries(models, &favorites);
+
+        assert_eq!(get_model_group_names(&entries)[0..2], [None, None]);
+    }
+
+    #[gpui::test]
+    fn test_non_favorite_models_omit_group_name_even_when_names_are_duplicated(
+        _cx: &mut TestAppContext,
+    ) {
+        let models = create_named_model_list(vec![
+            (
+                "ChatGPT Subscription: Work",
+                vec![("openai-subscribed:work/gpt-5.5", "GPT-5.5")],
+            ),
+            (
+                "ChatGPT Subscription: Personal",
+                vec![("openai-subscribed:personal/gpt-5.5", "GPT-5.5")],
+            ),
+        ]);
+        let favorites = create_favorites(vec![]);
+
+        let entries = info_list_to_picker_entries(models, &favorites);
+
+        assert_eq!(get_model_group_names(&entries), [None, None]);
     }
 
     #[gpui::test]
@@ -808,11 +951,14 @@ mod tests {
         let entries = info_list_to_picker_entries(models, &favorites);
 
         for entry in &entries {
-            if let ModelPickerEntry::Model(info, is_favorite) = entry {
+            if let ModelPickerEntry::Model {
+                info, is_favorite, ..
+            } = entry
+            {
                 if info.id.0.as_ref() == "zed/claude" {
-                    assert!(is_favorite, "zed/claude should be a favorite");
+                    assert!(*is_favorite, "zed/claude should be a favorite");
                 } else {
-                    assert!(!is_favorite, "{} should not be a favorite", info.id.0);
+                    assert!(!*is_favorite, "{} should not be a favorite", info.id.0);
                 }
             }
         }
@@ -944,7 +1090,10 @@ mod tests {
         let entries = info_list_to_picker_entries(models, &favorites);
 
         for entry in &entries {
-            if let ModelPickerEntry::Model(info, is_favorite) = entry {
+            if let ModelPickerEntry::Model {
+                info, is_favorite, ..
+            } = entry
+            {
                 if info.id.0.as_ref() == "favorite-model" {
                     assert!(*is_favorite, "favorite-model should have is_favorite=true");
                 } else if info.id.0.as_ref() == "regular-model" {
