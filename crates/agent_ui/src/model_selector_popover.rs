@@ -52,9 +52,9 @@ impl Render for ModelSelectorPopover {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selector = self.selector.read(cx);
         let model = selector.delegate.active_model();
-        let model_name = model
-            .as_ref()
-            .map(|model| model.name.clone())
+        let model_name = selector
+            .delegate
+            .active_model_label()
             .unwrap_or_else(|| SharedString::from("Select a Model"));
 
         let model_icon = model.as_ref().and_then(|model| model.icon.clone());

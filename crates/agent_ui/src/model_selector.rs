@@ -143,6 +143,12 @@ impl ModelPickerDelegate {
         self.selected_model.as_ref()
     }
 
+    pub fn active_model_label(&self) -> Option<SharedString> {
+        self.selected_model
+            .as_ref()
+            .map(|model| active_model_label(model, self.models.as_ref()))
+    }
+
     pub fn favorites_count(&self) -> usize {
         self.favorites.len()
     }
@@ -487,6 +493,42 @@ fn info_list_to_picker_entries(
     entries
 }
 
+fn active_model_label(model: &AgentModelInfo, model_list: Option<&AgentModelList>) -> SharedString {
+    let Some(model_list) = model_list else {
+        return model.name.clone();
+    };
+
+    let duplicate_name_count = match model_list {
+        AgentModelList::Flat(models) => models
+            .iter()
+            .filter(|candidate| candidate.name == model.name)
+            .count(),
+        AgentModelList::Grouped(groups) => groups
+            .values()
+            .flatten()
+            .filter(|candidate| candidate.name == model.name)
+            .count(),
+    };
+
+    if duplicate_name_count <= 1 {
+        return model.name.clone();
+    }
+
+    let Some(group_name) = model_group_name(model_list, &model.id) else {
+        return model.name.clone();
+    };
+    let Some(provider_suffix) = group_name
+        .as_ref()
+        .split_once(": ")
+        .map(|(_, suffix)| suffix)
+        .filter(|suffix| !suffix.is_empty())
+    else {
+        return model.name.clone();
+    };
+
+    SharedString::from(format!("{} ({})", model.name.as_ref(), provider_suffix))
+}
+
 fn model_group_name(model_list: &AgentModelList, model_id: &acp::ModelId) -> Option<SharedString> {
     let AgentModelList::Grouped(groups) = model_list else {
         return None;
@@ -808,6 +850,80 @@ mod tests {
                 ModelPickerEntry::Separator(_) => None,
             })
             .collect()
+    }
+
+    fn model_info(id: &str, name: &str) -> AgentModelInfo {
+        AgentModelInfo {
+            id: acp::ModelId::new(id.to_string()),
+            name: name.to_string().into(),
+            description: None,
+            icon: None,
+            is_latest: false,
+            cost: None,
+        }
+    }
+
+    #[gpui::test]
+    fn active_model_label_includes_subscription_name_when_model_name_is_duplicated(
+        _cx: &mut TestAppContext,
+    ) {
+        let models = create_named_model_list(vec![
+            (
+                "ChatGPT Subscription: Work",
+                vec![("openai-subscribed:work/gpt-5.5", "GPT-5.5")],
+            ),
+            (
+                "ChatGPT Subscription: Personal",
+                vec![("openai-subscribed:personal/gpt-5.5", "GPT-5.5")],
+            ),
+        ]);
+        let selected = model_info("openai-subscribed:work/gpt-5.5", "GPT-5.5");
+
+        assert_eq!(
+            active_model_label(&selected, Some(&models)).as_ref(),
+            "GPT-5.5 (Work)"
+        );
+    }
+
+    #[gpui::test]
+    fn active_model_label_omits_subscription_name_when_model_name_is_unique(
+        _cx: &mut TestAppContext,
+    ) {
+        let models = create_named_model_list(vec![
+            (
+                "ChatGPT Subscription: Work",
+                vec![("openai-subscribed:work/gpt-5.5", "GPT-5.5")],
+            ),
+            ("LM Studio", vec![("lm-studio/qwen3", "Qwen 3")]),
+        ]);
+        let selected = model_info("openai-subscribed:work/gpt-5.5", "GPT-5.5");
+
+        assert_eq!(
+            active_model_label(&selected, Some(&models)).as_ref(),
+            "GPT-5.5"
+        );
+    }
+
+    #[gpui::test]
+    fn active_model_label_omits_provider_name_when_duplicate_group_has_no_suffix(
+        _cx: &mut TestAppContext,
+    ) {
+        let models = create_named_model_list(vec![
+            (
+                "ChatGPT Subscription",
+                vec![("openai-subscribed/gpt-5.5", "GPT-5.5")],
+            ),
+            (
+                "ChatGPT Subscription: Work",
+                vec![("openai-subscribed:work/gpt-5.5", "GPT-5.5")],
+            ),
+        ]);
+        let selected = model_info("openai-subscribed/gpt-5.5", "GPT-5.5");
+
+        assert_eq!(
+            active_model_label(&selected, Some(&models)).as_ref(),
+            "GPT-5.5"
+        );
     }
 
     #[gpui::test]
