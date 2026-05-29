@@ -7,6 +7,7 @@
 //!
 //! Notably we do *not* assign a single language to a single file; in real world a single file can consist of multiple programming languages - HTML is a good example of that - and `language` crate tends to reflect that status quo in its API.
 mod buffer;
+mod cast_chunking;
 mod diagnostic;
 mod diagnostic_set;
 mod file_content;
@@ -93,6 +94,7 @@ use util::rel_path::RelPath;
 
 pub use buffer::Operation;
 pub use buffer::*;
+pub use cast_chunking::*;
 pub use diagnostic::{Diagnostic, DiagnosticSourceKind};
 pub use diagnostic_set::{DiagnosticEntry, DiagnosticEntryRef, DiagnosticGroup};
 pub use file_content::{ByteContent, FILE_ANALYSIS_BYTES, analyze_byte_content};

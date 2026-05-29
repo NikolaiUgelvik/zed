@@ -73,6 +73,88 @@ pub enum ThinkingBlockDisplay {
 
 #[with_fallible_options]
 #[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, Default)]
+pub struct SemanticSearchModelSelectionContent {
+    pub provider: Arc<str>,
+    pub model: String,
+    pub api_format: Option<SemanticSearchApiFormatContent>,
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticSearchApiFormatContent {
+    #[default]
+    OpenAiEmbeddings,
+    JinaRerank,
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum HyDEModeContent {
+    Off,
+    #[default]
+    Fallback,
+}
+
+#[with_fallible_options]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, Default)]
+pub struct SemanticSearchHyDESettingsContent {
+    pub mode: Option<HyDEModeContent>,
+    pub threshold: Option<f32>,
+    pub model: Option<LanguageModelSelection>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, Default)]
+pub struct SemanticSearchTopologyExpansionSettingsContent {
+    pub include_parent: Option<bool>,
+    pub include_siblings: Option<bool>,
+    pub max_parent_bytes: Option<usize>,
+    pub max_total_expanded_bytes: Option<usize>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, Default)]
+pub struct SemanticSearchSettingsContent {
+    pub enabled: Option<bool>,
+    pub max_indexed_file_bytes: Option<usize>,
+    pub chunk_max_non_whitespace_size: Option<usize>,
+    pub candidate_limit: Option<usize>,
+    pub rerank_limit: Option<usize>,
+    pub max_results: Option<usize>,
+    pub embedding: Option<SemanticSearchModelSelectionContent>,
+    pub reranker: Option<SemanticSearchModelSelectionContent>,
+    pub hyde: Option<SemanticSearchHyDESettingsContent>,
+    pub topology_expansion: Option<SemanticSearchTopologyExpansionSettingsContent>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, Default)]
 pub struct AgentSettingsContent {
     /// Whether the Agent is enabled.
     ///
@@ -200,6 +282,8 @@ pub struct AgentSettingsContent {
     ///
     /// Default: true
     pub show_merge_conflict_indicator: Option<bool>,
+    /// Semantic search settings for agent context retrieval.
+    pub semantic_search: Option<SemanticSearchSettingsContent>,
     /// Per-tool permission rules for granular control over which tool actions
     /// require confirmation.
     ///

@@ -18,6 +18,7 @@ mod list_directory_tool;
 mod move_path_tool;
 mod read_file_tool;
 mod rename_tool;
+mod semantic_search_code_tool;
 mod skill_tool;
 mod spawn_agent_tool;
 mod symbol_locator;
@@ -75,6 +76,7 @@ pub use list_directory_tool::*;
 pub use move_path_tool::*;
 pub use read_file_tool::*;
 pub use rename_tool::*;
+pub use semantic_search_code_tool::*;
 pub use skill_tool::*;
 pub use spawn_agent_tool::*;
 pub use symbol_locator::*;
@@ -170,6 +172,7 @@ tools! {
     MovePathTool,
     ReadFileTool,
     RenameTool,
+    SemanticSearchCodeTool,
     SkillTool,
     SpawnAgentTool,
     TerminalTool,

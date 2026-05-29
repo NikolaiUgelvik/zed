@@ -561,7 +561,9 @@ mod tests {
     use crate::pattern_extraction::extract_terminal_pattern;
     use crate::tools::{DeletePathTool, FetchTool, TerminalTool};
     use crate::{AgentTool, EditFileTool};
-    use agent_settings::{AgentProfileId, CompiledRegex, InvalidRegexPattern, ToolRules};
+    use agent_settings::{
+        AgentProfileId, CompiledRegex, InvalidRegexPattern, SemanticSearchSettings, ToolRules,
+    };
     use gpui::px;
     use settings::{DockPosition, NotifyWhenAgentWaiting, PlaySoundWhenAgentDone};
     use std::sync::Arc;
@@ -596,6 +598,7 @@ mod tests {
             use_modifier_to_send: true,
             message_editor_min_lines: 1,
             tool_permissions,
+            semantic_search: SemanticSearchSettings::default(),
             show_turn_stats: false,
             show_merge_conflict_indicator: true,
             sidebar_side: Default::default(),

@@ -1063,6 +1063,27 @@
       //   "temperature": 1.0
       // }
     ],
+    "semantic_search": {
+      "enabled": false,
+      "max_indexed_file_bytes": 262144,
+      "chunk_max_non_whitespace_size": 1600,
+      "candidate_limit": 80,
+      "rerank_limit": 30,
+      "max_results": 10,
+      "embedding": null,
+      "reranker": null,
+      "hyde": {
+        "mode": "fallback",
+        "threshold": 0.6,
+        "model": null,
+      },
+      "topology_expansion": {
+        "include_parent": true,
+        "include_siblings": false,
+        "max_parent_bytes": 12000,
+        "max_total_expanded_bytes": 24000,
+      },
+    },
     // Permission rules for tool actions.
     //
     // The "default" setting applies when no tool-specific rules match.
@@ -1131,6 +1152,7 @@
           "rename_symbol": true,
           "read_file": true,
           "grep": true,
+          "semantic_search_code": true,
           "skill": true,
           "spawn_agent": true,
           "terminal": true,
@@ -1153,6 +1175,7 @@
           "go_to_definition": true,
           "read_file": true,
           "grep": true,
+          "semantic_search_code": true,
           "skill": true,
           "spawn_agent": true,
           "update_plan": true,

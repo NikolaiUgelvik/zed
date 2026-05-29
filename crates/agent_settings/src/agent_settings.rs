@@ -133,6 +133,164 @@ impl WindowLayout {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticSearchModelSelection {
+    pub provider: Arc<str>,
+    pub model: String,
+    pub api_format: SemanticSearchApiFormat,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticSearchApiFormat {
+    #[default]
+    OpenAiEmbeddings,
+    JinaRerank,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HyDEMode {
+    Off,
+    #[default]
+    Fallback,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticSearchHyDESettings {
+    pub mode: HyDEMode,
+    pub threshold: f32,
+    pub model: Option<LanguageModelSelection>,
+}
+
+impl Default for SemanticSearchHyDESettings {
+    fn default() -> Self {
+        Self {
+            mode: HyDEMode::Fallback,
+            threshold: 0.6,
+            model: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticSearchTopologyExpansionSettings {
+    pub include_parent: bool,
+    pub include_siblings: bool,
+    pub max_parent_bytes: usize,
+    pub max_total_expanded_bytes: usize,
+}
+
+impl Default for SemanticSearchTopologyExpansionSettings {
+    fn default() -> Self {
+        Self {
+            include_parent: true,
+            include_siblings: false,
+            max_parent_bytes: 12_000,
+            max_total_expanded_bytes: 24_000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticSearchSettings {
+    pub enabled: bool,
+    pub max_indexed_file_bytes: usize,
+    pub chunk_max_non_whitespace_size: usize,
+    pub candidate_limit: usize,
+    pub rerank_limit: usize,
+    pub max_results: usize,
+    pub embedding: Option<SemanticSearchModelSelection>,
+    pub reranker: Option<SemanticSearchModelSelection>,
+    pub hyde: SemanticSearchHyDESettings,
+    pub topology_expansion: SemanticSearchTopologyExpansionSettings,
+}
+
+impl Default for SemanticSearchSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_indexed_file_bytes: 262_144,
+            chunk_max_non_whitespace_size: 1600,
+            candidate_limit: 80,
+            rerank_limit: 30,
+            max_results: 10,
+            embedding: None,
+            reranker: None,
+            hyde: SemanticSearchHyDESettings::default(),
+            topology_expansion: SemanticSearchTopologyExpansionSettings::default(),
+        }
+    }
+}
+
+impl From<settings::SemanticSearchApiFormatContent> for SemanticSearchApiFormat {
+    fn from(api_format: settings::SemanticSearchApiFormatContent) -> Self {
+        match api_format {
+            settings::SemanticSearchApiFormatContent::OpenAiEmbeddings => Self::OpenAiEmbeddings,
+            settings::SemanticSearchApiFormatContent::JinaRerank => Self::JinaRerank,
+        }
+    }
+}
+
+impl From<settings::HyDEModeContent> for HyDEMode {
+    fn from(mode: settings::HyDEModeContent) -> Self {
+        match mode {
+            settings::HyDEModeContent::Off => Self::Off,
+            settings::HyDEModeContent::Fallback => Self::Fallback,
+        }
+    }
+}
+
+impl From<settings::SemanticSearchModelSelectionContent> for SemanticSearchModelSelection {
+    fn from(selection: settings::SemanticSearchModelSelectionContent) -> Self {
+        Self {
+            provider: selection.provider,
+            model: selection.model,
+            api_format: selection.api_format.unwrap_or_default().into(),
+        }
+    }
+}
+
+impl From<settings::SemanticSearchHyDESettingsContent> for SemanticSearchHyDESettings {
+    fn from(settings: settings::SemanticSearchHyDESettingsContent) -> Self {
+        Self {
+            mode: settings.mode.unwrap().into(),
+            threshold: settings.threshold.unwrap(),
+            model: settings.model,
+        }
+    }
+}
+
+impl From<settings::SemanticSearchTopologyExpansionSettingsContent>
+    for SemanticSearchTopologyExpansionSettings
+{
+    fn from(settings: settings::SemanticSearchTopologyExpansionSettingsContent) -> Self {
+        Self {
+            include_parent: settings.include_parent.unwrap(),
+            include_siblings: settings.include_siblings.unwrap(),
+            max_parent_bytes: settings.max_parent_bytes.unwrap(),
+            max_total_expanded_bytes: settings.max_total_expanded_bytes.unwrap(),
+        }
+    }
+}
+
+impl From<settings::SemanticSearchSettingsContent> for SemanticSearchSettings {
+    fn from(settings: settings::SemanticSearchSettingsContent) -> Self {
+        Self {
+            enabled: settings.enabled.unwrap(),
+            max_indexed_file_bytes: settings.max_indexed_file_bytes.unwrap(),
+            chunk_max_non_whitespace_size: settings.chunk_max_non_whitespace_size.unwrap(),
+            candidate_limit: settings.candidate_limit.unwrap(),
+            rerank_limit: settings.rerank_limit.unwrap(),
+            max_results: settings.max_results.unwrap(),
+            embedding: settings.embedding.map(Into::into),
+            reranker: settings.reranker.map(Into::into),
+            hyde: settings.hyde.unwrap().into(),
+            topology_expansion: settings.topology_expansion.unwrap().into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, RegisterSetting)]
 pub struct AgentSettings {
     pub enabled: bool,
@@ -167,6 +325,7 @@ pub struct AgentSettings {
     pub message_editor_min_lines: usize,
     pub show_turn_stats: bool,
     pub show_merge_conflict_indicator: bool,
+    pub semantic_search: SemanticSearchSettings,
     pub tool_permissions: ToolPermissions,
 }
 
@@ -671,6 +830,7 @@ impl Settings for AgentSettings {
             message_editor_min_lines: agent.message_editor_min_lines.unwrap(),
             show_turn_stats: agent.show_turn_stats.unwrap(),
             show_merge_conflict_indicator: agent.show_merge_conflict_indicator.unwrap(),
+            semantic_search: agent.semantic_search.unwrap().into(),
             tool_permissions: compile_tool_permissions(agent.tool_permissions),
         }
     }
@@ -1518,5 +1678,78 @@ mod tests {
             assert_eq!(user_layout.agent_dock, Some(DockPosition::Right));
             assert_eq!(user_layout.project_panel_dock, Some(DockSide::Right));
         });
+    }
+}
+
+#[cfg(test)]
+mod semantic_search_settings_tests {
+    use super::*;
+    use gpui::UpdateGlobal;
+
+    #[test]
+    fn semantic_search_defaults_to_disabled() {
+        let settings = SemanticSearchSettings::default();
+        assert!(!settings.enabled);
+        assert_eq!(settings.chunk_max_non_whitespace_size, 1600);
+        assert_eq!(settings.candidate_limit, 80);
+        assert_eq!(settings.rerank_limit, 30);
+        assert_eq!(settings.max_results, 10);
+        assert_eq!(settings.hyde.mode, HyDEMode::Fallback);
+        assert_eq!(settings.hyde.threshold, 0.6);
+        assert!(settings.embedding.is_none());
+        assert!(settings.reranker.is_none());
+    }
+
+    #[test]
+    fn topology_expansion_defaults_include_parent_only() {
+        let settings = SemanticSearchTopologyExpansionSettings::default();
+        assert!(settings.include_parent);
+        assert!(!settings.include_siblings);
+        assert_eq!(settings.max_parent_bytes, 12_000);
+        assert_eq!(settings.max_total_expanded_bytes, 24_000);
+    }
+
+    #[gpui::test]
+    fn semantic_search_reads_user_settings(cx: &mut App) {
+        let store = SettingsStore::test(cx);
+        cx.set_global(store);
+        project::DisableAiSettings::register(cx);
+        AgentSettings::register(cx);
+
+        SettingsStore::update_global(cx, |store, cx| {
+            store
+                .set_user_settings(
+                    r#"{
+                        "agent": {
+                            "semantic_search": {
+                                "enabled": true,
+                                "candidate_limit": 12,
+                                "hyde": {
+                                    "mode": "off",
+                                    "threshold": 0.25
+                                },
+                                "topology_expansion": {
+                                    "include_siblings": true
+                                }
+                            }
+                        }
+                    }"#,
+                    cx,
+                )
+                .unwrap();
+        });
+
+        let settings = AgentSettings::get_global(cx);
+        assert!(settings.semantic_search.enabled);
+        assert_eq!(settings.semantic_search.max_indexed_file_bytes, 262_144);
+        assert_eq!(settings.semantic_search.candidate_limit, 12);
+        assert_eq!(settings.semantic_search.hyde.mode, HyDEMode::Off);
+        assert_eq!(settings.semantic_search.hyde.threshold, 0.25);
+        assert!(settings.semantic_search.topology_expansion.include_parent);
+        assert!(settings.semantic_search.topology_expansion.include_siblings);
+        assert_eq!(
+            settings.semantic_search.topology_expansion.max_parent_bytes,
+            12_000
+        );
     }
 }
